@@ -1,18 +1,18 @@
 #!/bin/bash
 
 # Đọc từng dòng input theo thứ tự
-read -r INSTALL_MODE      # 1 = Cài SOCKS5
-read -r CONFIG_MODE       # 2 = Thủ công
-read -r ENABLE_TELEGRAM   # 1 = Bật Telegram
-read -r BOT_TOKEN         # Bot token
-read -r USER_ID           # Telegram user ID
-read -r PORT              # Port proxy
-read -r USERNAME          # Tên đăng nhập proxy
-read -r PASSWORD          # Mật khẩu proxy
+read -r INSTALL_MODE    # 1 = Cài SOCKS5
+read -r CONFIG_MODE     # 2 = Thủ công
+read -r ENABLE_TELEGRAM # 1 = Bật Telegram
+read -r BOT_TOKEN       # Bot token
+read -r USER_ID         # Telegram user ID
+read -r PORT            # Port proxy
+read -r USERNAME        # Tên đăng nhập proxy
+read -r PASSWORD        # Mật khẩu proxy
 
 # Cài đặt Dante SOCKS5
 apt update -y
-apt install -y dante-server curl -y
+apt install -y dante-server curl
 
 # Lấy interface mạng thật
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
@@ -39,23 +39,21 @@ pass {
 }
 EOF
 
-# Tạo tài khoản proxy
-useradd -M -s /usr/sbin/nologin "$USERNAME"
+# Tạo user
+useradd -M -s /bin/false "$USERNAME"
 echo "$USERNAME:$PASSWORD" | chpasswd
 
-# Mở cổng nếu cần
-iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
-
 # Khởi động dịch vụ
-systemctl enable danted
 systemctl restart danted
+systemctl enable danted
 
-# Gửi Telegram nếu bật
-if [ "$ENABLE_TELEGRAM" == "1" ]; then
-    IP=$(curl -s ifconfig.me)
-    PROXY_LINK="socks5://$USERNAME:$PASSWORD@$IP:$PORT"
-    MESSAGE="🧦 SOCKS5 Proxy của bạn:\n$PROXY_LINK"
+# Lấy IP công khai
+IP=$(curl -s ifconfig.me)
+
+# Gửi thông tin Telegram (nếu bật)
+if [[ "$ENABLE_TELEGRAM" == "1" ]]; then
+    MSG="🧦 SOCKS5 Proxy đã sẵn sàng:\nsocks5://$USERNAME:$PASSWORD@$IP:$PORT"
     curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-         -d chat_id="$USER_ID" \
-         -d text="$MESSAGE"
+        -d chat_id="$USER_ID" \
+        -d text="$MSG"
 fi
