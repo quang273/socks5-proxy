@@ -20,7 +20,6 @@ validate_ip() {
         echo "ERROR: IP address format invalid."
         exit 1
     fi
-    # Check each octet <= 255
     IFS='.' read -r -a octets <<< "$ip"
     for o in "${octets[@]}"; do
         if (( o < 0 || o > 255 )); then
@@ -42,6 +41,8 @@ validate_not_empty() {
 # Đọc biến đầu vào (theo thứ tự)
 read -r INSTALL_MODE CONFIG_MODE ENABLE_TELEGRAM BOT_TOKEN USER_ID PORT PASSWORD ALLOW_IP
 
+USERNAME="quang"  # <--- USERNAME cố định
+
 log "Validating input parameters..."
 
 validate_port "$PORT"
@@ -51,11 +52,7 @@ validate_not_empty "$USER_ID" "USER_ID"
 validate_not_empty "$PASSWORD" "PASSWORD"
 
 log "Parameters valid. Proceeding..."
-
-# Sinh username ngẫu nhiên 6 ký tự a-z0-9
-USERNAME="user$(head /dev/urandom | tr -dc a-z0-9 | head -c6)"
-
-log "Generated username: $USERNAME"
+log "Using fixed username: $USERNAME"
 
 log "Updating package list and installing required packages..."
 apt update -y
@@ -97,16 +94,10 @@ systemctl restart danted
 systemctl enable danted
 
 log "Setting iptables rules..."
-
-# Xóa các rule cũ có thể trùng (để tránh tràn rule)
 iptables -D INPUT -p tcp --dport "$PORT" ! -s "$ALLOW_IP" -j DROP 2>/dev/null || true
 iptables -D OUTPUT -p udp --dport 53 -j DROP 2>/dev/null || true
-
-# Thêm rule mới
 iptables -A INPUT -p tcp --dport "$PORT" ! -s "$ALLOW_IP" -j DROP
-# Cho phép DNS UDP ra localhost (vd: systemd-resolved)
 iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.53 -j ACCEPT
-# Chặn DNS UDP khác (để tránh DNS leak)
 iptables -A OUTPUT -p udp --dport 53 -j DROP
 
 log "Fetching public IP..."
