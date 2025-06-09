@@ -1,3 +1,5 @@
+#!/bin/bash
+
 setup_proxy_single_port() {
   local PORT=$1
   local PASSWORD=$2
@@ -8,15 +10,15 @@ setup_proxy_single_port() {
   local USERNAME="quang"
 
   # Validate port, ip, token...
-  # (bạn có thể giữ phần validate như trong script)
+  # (bạn có thể giữ phần validate nếu muốn)
 
-  # Update packages, cài đặt dante, iptables (có thể bỏ nếu đã cài rồi)
+  # Cập nhật và cài đặt dante-server, curl, iptables
   apt update -y
   apt install -y dante-server curl iptables
 
   IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-  # Viết cấu hình dante
+  # Viết file cấu hình dante
   cat > /etc/danted.conf <<EOF
 internal: $IFACE port = $PORT
 external: $IFACE
@@ -42,25 +44,25 @@ EOF
   useradd -M -s /bin/false "$USERNAME"
   echo "$USERNAME:$PASSWORD" | chpasswd
 
-  # Restart dante
+  # Khởi động lại dịch vụ dante
   systemctl restart danted
   systemctl enable danted
 
-  # iptables
+  # Cấu hình iptables
   iptables -D INPUT -p tcp --dport "$PORT" ! -s "$ALLOW_IP" -j DROP 2>/dev/null || true
   iptables -D OUTPUT -p udp --dport 53 -j DROP 2>/dev/null || true
   iptables -A INPUT -p tcp --dport "$PORT" ! -s "$ALLOW_IP" -j DROP
   iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.53 -j ACCEPT
   iptables -A OUTPUT -p udp --dport 53 -j DROP
 
-  # Gửi telegram
+  # Gửi tin nhắn Telegram chỉ có chuỗi base64
   IP=$(curl -s ifconfig.me)
   if [[ "$ENABLE_TELEGRAM" == "1" ]]; then
     PROXY="socks5://$USERNAME:$PASSWORD@$IP:$PORT"
     ENCODED=$(echo -n "$PROXY" | base64)
     curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
       -d chat_id="$USER_ID" \
-      -d text="\xf0\x9f\x9a\x80 Proxy mới (base64): \`$ENCODED\`" \
+      -d text="$ENCODED" \
       -d parse_mode="Markdown"
   fi
 }
