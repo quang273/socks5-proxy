@@ -50,21 +50,18 @@ EOF
   iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null \
     || iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
   systemctl restart danted
-  systemctl enable  danted
+  systemctl enable danted
 
   # 6) Thông tin proxy
   local IP
   IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
   local PROXY_LINE="$IP:$PORT:$USERNAME:$PASSWORD"
-  local PROXY_URI="socks5://$USERNAME:$PASSWORD@$IP:$PORT"
-  local ENCODED=$(echo -n "$PROXY_URI" | base64)
 
   # 7) Gửi Telegram nếu yêu cầu
   if [[ "$ENABLE_TELEGRAM" == "1" && -n "$BOT_TOKEN" && -n "$USER_ID" ]]; then
     curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
       -d chat_id="$USER_ID" \
-      -d parse_mode="Markdown" \
-      -d text="🎉 *Proxy đã sẵn sàng*\n\n*Base64*\n\`\`\`\n$ENCODED\n\`\`\`\n*ip:port:user:pass*\n\`\`\`\n$PROXY_LINE\n\`\`\`" >/dev/null
+      -d text="$PROXY_LINE" >/dev/null
   fi
 
   echo "[OK] Proxy SOCKS5 đã tạo: $PROXY_LINE"
