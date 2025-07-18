@@ -1,60 +1,48 @@
 #!/bin/bash
 
-# === CONFIGURATION ===
-PROJECT_PREFIX="proxyproj"
-NUM_PROJECTS=3
-NUM_INSTANCES=8
-ZONE_TOKYO="asia-northeast1-a"
-ZONE_OSAKA="asia-northeast2-a"
-SCRIPT_URL="https://raw.githubusercontent.com/quang273/socks5-proxy/main/install_socks5.sh"
+# === Lấy metadata từ GCP ===
+PROXY_USER=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/attributes/PROXY_USER -H "Metadata-Flavor: Google")
+PROXY_PASS=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/attributes/PROXY_PASS -H "Metadata-Flavor: Google")
+PROXY_PORT=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/attributes/PROXY_PORT -H "Metadata-Flavor: Google")
+BOT_TOKEN=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/attributes/BOT_TOKEN -H "Metadata-Flavor: Google")
+USER_ID=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/attributes/USER_ID -H "Metadata-Flavor: Google")
 
-# Proxy metadata
-PROXY_USER="khoitran"
-PROXY_PASS="khoi1"
-PROXY_PORT="8888"
+# === Cài đặt dante-server ===
+apt update -y && apt install -y dante-server curl
 
-# Telegram Bot
-BOT_TOKEN="7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDtKKM"
-USER_ID="1053423800"
+# === Cấu hình danted ===
+cat > /etc/danted.conf <<EOF
+logoutput: /var/log/danted.log
+internal: 0.0.0.0 port = $PROXY_PORT
+external: eth0
+method: username none
+user.notprivileged: nobody
 
-# === Create Projects and Proxies ===
-PROJECT_IDS=()
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    log: connect disconnect error
+}
 
-for i in $(seq 1 $NUM_PROJECTS); do
-  (
-    RAW_ID="${PROJECT_PREFIX}-${RANDOM}"
-    PROJECT_ID="$RAW_ID"
-    PROJECT_IDS+=("$PROJECT_ID")
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: connect
+    log: connect disconnect error
+}
+EOF
 
-    echo -e "\n>>> [${i}] Creating project: $PROJECT_ID"
-    gcloud projects create "$PROJECT_ID" --name="$PROJECT_ID"
+# === Tạo user proxy ===
+useradd -m $PROXY_USER
+echo "$PROXY_USER:$PROXY_PASS" | chpasswd
 
-    BILLING_ACCOUNT=$(gcloud beta billing accounts list --format="value(ACCOUNT_ID)" | head -n 1)
-    gcloud beta billing projects link "$PROJECT_ID" --billing-account="$BILLING_ACCOUNT"
+# === Khởi động lại danted ===
+systemctl restart danted
 
-    gcloud services enable compute.googleapis.com --project="$PROJECT_ID"
-    gcloud config set project "$PROJECT_ID"
+# === Gửi IP:PORT:USER:PASS về Telegram ===
+PUBLIC_IP=$(curl -s ifconfig.me)
+PROXY_INFO="$PUBLIC_IP:$PROXY_PORT:$PROXY_USER:$PROXY_PASS"
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${USER_ID}" \
+    -d "text=${PROXY_INFO}"
 
-    for j in $(seq 1 $((NUM_INSTANCES / 2))); do
-      for ZONE in "$ZONE_TOKYO" "$ZONE_OSAKA"; do
-        INSTANCE_NAME="proxy-${ZONE##*-}-${j}"
-
-        echo ">>> Creating instance $INSTANCE_NAME in zone $ZONE..."
-
-        gcloud compute instances create "$INSTANCE_NAME" \
-          --zone="$ZONE" \
-          --machine-type="e2-micro" \
-          --image-family="debian-11" \
-          --image-project="debian-cloud" \
-          --metadata=startup-script-url="$SCRIPT_URL",PROXY_USER="$PROXY_USER",PROXY_PASS="$PROXY_PASS",PROXY_PORT="$PROXY_PORT",BOT_TOKEN="$BOT_TOKEN",USER_ID="$USER_ID" \
-          --quiet &
-      done
-    done
-
-    wait
-    echo ">>> ✅ Project $PROJECT_ID done"
-  ) &
-done
-
-wait
-echo -e "\n✅ All projects and proxies created successfully."
+# === In ra log kiểm tra ===
+echo "Proxy SOCKS5 đã được cài đặt: $PROXY_INFO"
