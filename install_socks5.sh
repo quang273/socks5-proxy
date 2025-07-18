@@ -10,17 +10,16 @@ NUM_PROJECTS_TO_CREATE=3 # Target number of successful projects to create
 NUM_INSTANCES=8          # Total instances per project (4 Tokyo, 4 Osaka)
 ZONE_TOKYO="asia-northeast1-a"
 ZONE_OSAKA="asia-northeast2-a"
-SCRIPT_URL="https://raw.githubusercontent.com/quang273/socks5-proxy/main/install_socks5.sh" # URL for the SOCKS5 installation script
+SCRIPT_URL="https://raw.githubusercontent.com/quang273/socks5-proxy/main/install_socks5.sh"
 
-# Proxy metadata (read from environment variables or use defaults)
-# This allows sensitive info to be passed via environment variables from the calling script
-PROXY_USER="${PROXY_USER:-khoitran}"
-PROXY_PASS="${PROXY_PASS:-khoi1}"
-PROXY_PORT="${PROXY_PORT:-8888}"
+# Proxy metadata
+PROXY_USER="khoitran"
+PROXY_PASS="khoi1"
+PROXY_PORT="8888"
 
-# Telegram Bot (read from environment variables)
-BOT_TOKEN="${BOT_TOKEN:-}"
-USER_ID="${USER_ID:-}"
+# Telegram Bot
+BOT_TOKEN="7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDTKKM"
+USER_ID="1053423800"
 
 if [ -z "$BOT_TOKEN" ] || [ -z "$USER_ID" ]; then
     echo "Warning: BOT_TOKEN or USER_ID not set. Telegram bot functionality may not work."
@@ -88,7 +87,6 @@ while [ "$SUCCESSFUL_PROJECT_COUNT" -lt "$NUM_PROJECTS_TO_CREATE" ]; do
     fi
 
     # 5. Add IAM permission to allow default service account full control (roles/editor)
-    # This role is broad but ensures the script has necessary permissions.
     SERVICE_ACCOUNT=$(gcloud config get-value account)
     echo "Adding 'roles/editor' permission for service account $SERVICE_ACCOUNT on project $PROJECT_ID"
     if ! gcloud projects add-iam-policy-binding "$PROJECT_ID" \
@@ -104,8 +102,6 @@ while [ "$SUCCESSFUL_PROJECT_COUNT" -lt "$NUM_PROJECTS_TO_CREATE" ]; do
     INSTANCE_PIDS_FOR_PROJECT=()
     for j in $(seq 1 $((NUM_INSTANCES / 2))); do
       for ZONE in "$ZONE_TOKYO" "$ZONE_OSAKA"; do
-        # Improve instance naming for easier identification
-        # e.g., proxy-tokyo-1, proxy-osaka-1
         ZONE_NAME=$(echo "$ZONE" | sed 's/asia-northeast1-a/tokyo/g; s/asia-northeast2-a/osaka/g')
         INSTANCE_NAME="proxy-${ZONE_NAME}-${j}"
 
@@ -119,7 +115,7 @@ while [ "$SUCCESSFUL_PROJECT_COUNT" -lt "$NUM_PROJECTS_TO_CREATE" ]; do
           --tags=proxy \
           --metadata=startup-script-url="$SCRIPT_URL",PROXY_USER="$PROXY_USER",PROXY_PASS="$PROXY_PASS",PROXY_PORT="$PROXY_PORT",BOT_TOKEN="$BOT_TOKEN",USER_ID="$USER_ID" \
           --quiet &
-        INSTANCE_PIDS_FOR_PROJECT+=("$!") # Store PID of the instance creation process
+        INSTANCE_PIDS_FOR_PROJECT+=("$!")
       done
     done
 
@@ -128,13 +124,28 @@ while [ "$SUCCESSFUL_PROJECT_COUNT" -lt "$NUM_PROJECTS_TO_CREATE" ]; do
       wait "$pid" || echo "Warning: An instance in project $PROJECT_ID might not have been created successfully."
     done
     
+    # === NEWLY ADDED SECTION: Send Telegram notification for each proxy (ip:port:user:pass only) ===
+    if [ -n "$BOT_TOKEN" ] && [ -n "$USER_ID" ]; then
+        # Iterate over all instances in the current project to get IP and send notification
+        for INST_NAME in $(gcloud compute instances list --project="$PROJECT_ID" --format="value(name)" --filter="name ~ ^proxy-"); do
+            EXTERNAL_IP=$(gcloud compute instances describe "$INST_NAME" --project="$PROJECT_ID" --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+            if [ -n "$EXTERNAL_IP" ]; then
+                TELEGRAM_MESSAGE="${EXTERNAL_IP}:${PROXY_PORT}:${PROXY_USER}:${PROXY_PASS}"
+                
+                curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                     -d chat_id="${USER_ID}" \
+                     -d text="${TELEGRAM_MESSAGE}" # Send only the proxy content, no extra text
+            fi
+        done
+    fi
+    # === END OF NEWLY ADDED SECTION ===
+
     echo ">>> ✅ Project $PROJECT_ID done"
-    exit 0 # Return 0 if the project was created completely and successfully
+    exit 0
   ) & # Run the entire project creation block in a parallel subshell
   
-  CURRENT_PROJECT_PID=$! # Get the PID of the newly launched subshell
+  CURRENT_PROJECT_PID=$!
   
-  # Wait for the subshell to complete and check its exit code
   wait "$CURRENT_PROJECT_PID"
   EXIT_CODE=$?
 
@@ -145,19 +156,16 @@ while [ "$SUCCESSFUL_PROJECT_COUNT" -lt "$NUM_PROJECTS_TO_CREATE" ]; do
     echo "Attempt to create a project failed (Exit Code: $EXIT_CODE). Will try again if needed."
   fi
 
-  # Prevent an infinite loop if there's a persistent error
-  if [ "$ATTEMPT_COUNT" -gt "$((NUM_PROJECTS_TO_CREATE * 5))" ]; then # Try a maximum of 5 times the target count
+  if [ "$ATTEMPT_COUNT" -gt "$((NUM_PROJECTS_TO_CREATE * 5))" ]; then
     echo "!!! Warning: Too many attempts ($ATTEMPT_COUNT) to create projects without reaching the target. Stopping."
     break
   fi
 
-  # Pause briefly between attempts to avoid rate limiting or overloading
-  sleep 5 
-
+  sleep 5
 done
 
 echo -e "\n=== Project creation completed. Total successful projects: $SUCCESSFUL_PROJECT_COUNT ==="
-echo -e "\nWaiting for all instances within successful projects to be ready (this happens asynchronously via startup scripts)..."
+echo -e "\nWaiting for all instances within successful projects to be ready (this happens asynchronously)..."
 
 # Note: Waiting for instances here only ensures the 'gcloud compute instances create' command was sent.
 # The actual startup script execution and proxy readiness is a separate process on each instance.
