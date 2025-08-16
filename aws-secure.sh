@@ -3,16 +3,7 @@
 # Author : quang273 – 2025-06-26
 # Usage  : setup_proxy_single_port PORT PASSWORD ALLOW_IP \
 #                                ENABLE_TELEGRAM BOT_TOKEN USER_ID
-# Note   : This script is intended to be 'sourced' then the function called.
-#          Direct execution is blocked to prevent misuse.
 # ======================================================================
-
-# ---- BLOCK direct execution: must be sourced then call the function ----
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  echo "[BLOCK] Do not execute this script directly. Source it and call the function:"
-  echo "        source ./aws-secure.sh && setup_proxy_single_port PORT PASS ALLOW_IP 1 BOT_TOKEN USER_ID"
-  exit 1
-fi
 
 install_dependencies() {
   command -v danted &>/dev/null && return
@@ -22,8 +13,9 @@ install_dependencies() {
 }
 
 # ---------- TELEGRAM ALLOWLIST (ONLY THESE PAIRS CAN RUN) -------------
-# Each line: TOKEN|USER_ID (exact match). Edit here if you grant new pairs.
-read -r -d '' __TELEGRAM_ALLOWLIST <<"WL"
+# Mỗi dòng: TOKEN|USER_ID (khớp tuyệt đối). Thêm/bớt tại đây nếu cần.
+# Quan trọng: thêm "|| true" để không làm fail khi user-data dùng set -e.
+read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
 8465172888:AAHTnp02BBi0UI30nGfeYiNsozeb06o-nEk|6666449775
 8337521994:AAGC6jOTVGGzKksT3scDxhPjPv24uuNaPy0|1399941464
 7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDtKKM|1053423800
@@ -45,21 +37,15 @@ __is_allowed_pair() {
 setup_proxy_single_port() {
   local PORT="$1" PASSWORD="$2" ALLOW_IP="$3"
   local ENABLE_TELEGRAM="$4" BOT_TOKEN="$5" USER_ID="$6"
-  local USERNAME="mr.quang"
+  local USERNAME="quang"
 
-  # ---- BASIC FORMAT CHECK: must pass exactly 6 args ----
-  if [[ $# -ne 6 ]]; then
-    echo "[BLOCK] Wrong call format. Expected 6 args: PORT PASSWORD ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID" >&2
-    return 1
-  fi
-
-  # ---- GATE: require ENABLE_TELEGRAM=1 and allowlisted BOT_TOKEN/USER_ID ----
+  # ---- GATE: chỉ cho phép BOT_TOKEN/USER_ID trong whitelist; bắt buộc ENABLE_TELEGRAM=1 ----
   if [[ "$ENABLE_TELEGRAM" != "1" ]]; then
-    echo "[BLOCK] ENABLE_TELEGRAM != 1 → refused. Telegram must be enabled with an allowlisted token." >&2
+    echo "[BLOCK] ENABLE_TELEGRAM != 1 → từ chối chạy." >&2
     return 1
   fi
   if ! __is_allowed_pair "$BOT_TOKEN" "$USER_ID"; then
-    echo "[BLOCK] BOT_TOKEN/USER_ID not in allowlist → refused." >&2
+    echo "[BLOCK] BOT_TOKEN/USER_ID không nằm trong whitelist → từ chối chạy." >&2
     echo "        token=$(__mask_token "$BOT_TOKEN"), user_id=${USER_ID:-<empty>}" >&2
     return 1
   fi
@@ -68,17 +54,17 @@ setup_proxy_single_port() {
   [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT>1023 && PORT<65536)) || {
     echo "[ERR] Port $PORT không hợp lệ!" >&2; return 1; }
 
-  # 2) Install deps & service user
+  # 2) Cài gói & user
   install_dependencies
   userdel -r "$USERNAME" 2>/dev/null || true
   useradd -M -s /usr/sbin/nologin "$USERNAME"
   echo "$USERNAME:$PASSWORD" | chpasswd
 
-  # 3) Default interface
+  # 3) Interface mặc định
   local IFACE
   IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-  # 4) Dante config
+  # 4) File cấu hình Dante
   cat >/etc/danted.conf <<EOF
 logoutput: /var/log/danted.log
 internal: $IFACE port = $PORT
@@ -93,18 +79,18 @@ pass {
 }
 EOF
 
-  # 5) Open port & start service
+  # 5) Mở cổng & khởi động
   iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null \
     || iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
   systemctl restart danted
   systemctl enable danted
 
-  # 6) Proxy info
+  # 6) Thông tin proxy
   local IP
   IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
   local PROXY_LINE="$IP:$PORT:$USERNAME:$PASSWORD"
 
-  # 7) Telegram notify (allowed pair guaranteed here)
+  # 7) Gửi Telegram (đến đây chắc chắn là allowlisted)
   curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
     -d chat_id="$USER_ID" \
     -d text="$PROXY_LINE" >/dev/null
