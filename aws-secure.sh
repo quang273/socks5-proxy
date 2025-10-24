@@ -100,6 +100,48 @@ EOF
     -d chat_id="$USER_ID" \
     -d text="$PROXY_LINE" >/dev/null
 
+  # -------------------- [BỔ SUNG] Notify STOP/START (IP runtime) --------------------
+  # Lưu env (không lưu IP để mỗi lần START sẽ tự lấy IP mới)
+  cat >/etc/proxy_notify.env <<EOF
+BOT_TOKEN="$BOT_TOKEN"
+USER_ID="$USER_ID"
+PROXY_PORT="$PORT"
+PROXY_USER="$USERNAME"
+PROXY_PASS="$PASSWORD"
+EOF
+  chmod 0600 /etc/proxy_notify.env
+
+  # Script notify: tự tính IP tại thời điểm chạy (đảm bảo IP mới sau khi VPS đổi IP)
+  cat >/usr/local/bin/proxy-notify.sh <<'EOS'
+#!/bin/bash
+set -euo pipefail
+: "${BOT_TOKEN:?}"; : "${USER_ID:?}"
+: "${PROXY_PORT:?}"; : "${PROXY_USER:?}"; : "${PROXY_PASS:?}"
+IP="$(curl -s ifconfig.me || hostname -I | awk '{print $1}')"
+PROXY_LINE="${IP}:${PROXY_PORT}:${PROXY_USER}:${PROXY_PASS}"
+action="${1:-start}"
+case "$action" in
+  start)  prefix="NEW" ;;
+  stop)   prefix="STOPPED" ;;
+  *)      prefix="INFO" ;;
+esac
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -d chat_id="$USER_ID" \
+  --data-urlencode "text=${prefix} ${PROXY_LINE}" >/dev/null || true
+EOS
+  chmod 0755 /usr/local/bin/proxy-notify.sh
+
+  # Drop-in cho danted.service để gửi khi START/STOP
+  install -d -m 0755 /etc/systemd/system/danted.service.d
+  cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
+[Service]
+EnvironmentFile=/etc/proxy_notify.env
+ExecStartPost=/usr/local/bin/proxy-notify.sh start
+ExecStopPost=/usr/local/bin/proxy-notify.sh stop
+EOF
+  systemctl daemon-reload
+  # ---------------------------------------------------------------------
+
   echo "[OK] Proxy SOCKS5 đã tạo: $PROXY_LINE"
 }
 
