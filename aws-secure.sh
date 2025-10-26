@@ -1,17 +1,17 @@
 #!/bin/bash
 # ======================== SOCKS5 PROXY CREATOR =========================
 # Author : quang273 – 2025-10-25 (Clean & Extended version)
-# Usage  : setup_proxy_single_port PORT PASSWORD ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID PROXY_USERNAME
+# Usage  : setup_proxy_single_port PORT PASSWORD ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID PROXY_USERNAME
 # ======================================================================
 
 set -euo pipefail
 
 install_dependencies() {
-  command -v danted &>/dev/null && return
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y curl iptables
-  apt-get install -y dante-server || apt-get install -y danted || true
+  command -v danted &>/dev/null && return
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y curl iptables
+  apt-get install -y dante-server || apt-get install -y danted || true
 }
 
 # ---------- TELEGRAM ALLOWLIST (TOKEN|USER_ID) -------------------------
@@ -29,68 +29,68 @@ read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
 WL
 
 __mask_token() {
-  local t="${1:-}"
-  [[ -z "$t" ]] && { echo "<empty>"; return; }
-  echo "${t:0:8}********"
+  local t="${1:-}"
+  [[ -z "$t" ]] && { echo "<empty>"; return; }
+  echo "${t:0:8}********"
 }
 
 __is_allowed_pair() {
-  local token="${1:-}" uid="${2:-}"
-  [[ -z "$token" || -z "$uid" ]] && return 1
-  local pair="$token|$uid"
-  grep -qxF -- "$pair" <<<"$__TELEGRAM_ALLOWLIST"
+  local token="${1:-}" uid="${2:-}"
+  [[ -z "$token" || -z "$uid" ]] && return 1
+  local pair="$token|$uid"
+  grep -qxF -- "$pair" <<<"$__TELEGRAM_ALLOWLIST"
 }
 
 enable_secure_network() {
-  echo "[INFO] Bật IP forwarding và cấu hình iptables an toàn..."
-  sysctl -w net.ipv4.ip_forward=1 >/dev/null
-  grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.conf || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-  iptables -P INPUT ACCEPT
-  iptables -P FORWARD ACCEPT
-  iptables -P OUTPUT ACCEPT
-  iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  iptables -A INPUT -i lo -j ACCEPT
-  iptables -A INPUT -p icmp -j ACCEPT
-  iptables-save > /etc/iptables.rules
-  cat >/etc/network/if-pre-up.d/iptablesload <<'EOF'
+  echo "[INFO] Bật IP forwarding và cấu hình iptables an toàn..."
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null
+  grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.conf || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+  iptables -P INPUT ACCEPT
+  iptables -P FORWARD ACCEPT
+  iptables -P OUTPUT ACCEPT
+  iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -A INPUT -i lo -j ACCEPT
+  iptables -A INPUT -p icmp -j ACCEPT
+  iptables-save > /etc/iptables.rules
+  cat >/etc/network/if-pre-up.d/iptablesload <<'EOF'
 #!/bin/sh
 iptables-restore < /etc/iptables.rules
 EOF
-  chmod +x /etc/network/if-pre-up.d/iptablesload
+  chmod +x /etc/network/if-pre-up.d/iptablesload
 }
 
 setup_proxy_single_port() {
-  local PORT="$1" PASSWORD="$2" ALLOW_IP="$3"
-  local ENABLE_TELEGRAM="$4" BOT_TOKEN="$5" USER_ID="$6"
-  local PROXY_USERNAME_ARG="${7:-}"
-  local USERNAME="${PROXY_USERNAME_ARG:-mr.quang}"
+  local PORT="$1" PASSWORD="$2" ALLOW_IP="$3"
+  local ENABLE_TELEGRAM="$4" BOT_TOKEN="$5" USER_ID="$6"
+  local PROXY_USERNAME_ARG="${7:-}"
+  local USERNAME="${PROXY_USERNAME_ARG:-mr.quang}"
 
-  if [[ "$ENABLE_TELEGRAM" != "1" ]]; then
-    echo "[BLOCK] ENABLE_TELEGRAM != 1 → từ chối chạy." >&2
-    return 1
-  fi
-  if ! __is_allowed_pair "$BOT_TOKEN" "$USER_ID"; then
-    echo "[BLOCK] BOT_TOKEN/USER_ID không nằm trong whitelist → từ chối chạy." >&2
-    echo "        token=$(__mask_token "$BOT_TOKEN"), user_id=${USER_ID:-<empty>}" >&2
-    return 1
-  fi
+  if [[ "$ENABLE_TELEGRAM" != "1" ]]; then
+    echo "[BLOCK] ENABLE_TELEGRAM != 1 → từ chối chạy." >&2
+    return 1
+  fi
+  if ! __is_allowed_pair "$BOT_TOKEN" "$USER_ID"; then
+    echo "[BLOCK] BOT_TOKEN/USER_ID không nằm trong whitelist → từ chối chạy." >&2
+    echo "        token=$(__mask_token "$BOT_TOKEN"), user_id=${USER_ID:-<empty>}" >&2
+    return 1
+  fi
 
-  [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT>1023 && PORT<65536)) || {
-    echo "[ERR] Port $PORT không hợp lệ!" >&2; return 1; }
+  [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT>1023 && PORT<65536)) || {
+    echo "[ERR] Port $PORT không hợp lệ!" >&2; return 1; }
 
-  install_dependencies
-  enable_secure_network
+  install_dependencies
+  enable_secure_network
 
-  userdel -r "$USERNAME" 2>/dev/null || true
-  useradd -M -s /usr/sbin/nologin "$USERNAME"
-  echo "$USERNAME:$PASSWORD" | chpasswd
+  userdel -r "$USERNAME" 2>/dev/null || true
+  useradd -M -s /usr/sbin/nologin "$USERNAME"
+  echo "$USERNAME:$PASSWORD" | chpasswd
 
-  local IFACE
-  IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
+  local IFACE
+  IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-  touch /var/log/danted.log && chmod 666 /var/log/danted.log
+  touch /var/log/danted.log && chmod 666 /var/log/danted.log
 
-  cat >/etc/danted.conf <<EOF
+  cat >/etc/danted.conf <<EOF
 logoutput: /var/log/danted.log
 internal: $IFACE port = $PORT
 external: $IFACE
@@ -98,71 +98,96 @@ method: username
 user.notprivileged: nobody
 client pass { from: $ALLOW_IP to: 0.0.0.0/0 }
 pass {
-  from: $ALLOW_IP to: 0.0.0.0/0
-  protocol: tcp udp
-  method: username
+  from: $ALLOW_IP to: 0.0.0.0/0
+  protocol: tcp udp
+  method: username
 }
 EOF
 
-  iptables -D INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null || true
-  iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
+  iptables -D INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null || true
+  iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
 
-  systemctl stop danted 2>/dev/null || true
+  systemctl stop danted 2>/dev/null || true
 
-  local IP
-  IP=$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || hostname -I | awk '{print $1}')
-  local PROXY_LINE="$IP:$PORT:$USERNAME:$PASSWORD"
+  local IP
+  IP=$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || hostname -I | awk '{print $1}')
+  local PROXY_LINE="$IP:$PORT:$USERNAME:$PASSWORD"
 
-  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -d chat_id="$USER_ID" \
-    -d text="[INIT] $PROXY_LINE" >/dev/null || true
+  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -d chat_id="$USER_ID" \
+    -d text="[INIT] $PROXY_LINE" >/dev/null || true
 
-  cat >/etc/proxy_notify.env <<EOF
+  cat >/etc/proxy_notify.env <<EOF
 BOT_TOKEN="$BOT_TOKEN"
 USER_ID="$USER_ID"
 PROXY_PORT="$PORT"
 PROXY_USER="$USERNAME"
 PROXY_PASS="$PASSWORD"
 EOF
-  chmod 0600 /etc/proxy_notify.env
+  chmod 0600 /etc/proxy_notify.env
 
-  cat >/usr/local/bin/proxy-notify.sh <<'EOS'
+  # SCRIPT NOTIFY ĐÃ ĐƯỢC SỬA ĐỔI: Kiểm tra $SYSTEMD_START_TRIGGERS để chặn reboot
+  cat >/usr/local/bin/proxy-notify.sh <<'EOS'
 #!/bin/bash
 set -euo pipefail
 : "${BOT_TOKEN:?}"; : "${USER_ID:?}"
 : "${PROXY_PORT:?}"; : "${PROXY_USER:?}"; : "${PROXY_PASS:?}"
+
 action="${1:-start}"
-if [[ "$action" == "start" && "${NOTIFY_MANUAL:-0}" != "1" ]]; then
-    exit 0
+
+# Logic mới: Nếu action là start VÀ hệ thống khởi động từ boot (hoặc lỗi), thì KHÔNG gửi.
+# SYSTEMD_START_TRIGGERS được set trong notify.conf (ExecStartPost)
+# Nếu không phải do người dùng chạy 'systemctl start/restart', biến này sẽ là 'reboot' hoặc 'auto'.
+# Nếu $SYSTEMD_START_TRIGGERS không rỗng (chạy qua drop-in), ta kiểm tra $action.
+if [[ "$action" == "start" ]]; then
+    if [[ "${SYSTEMD_START_TRIGGERS:-}" == "reboot" ]]; then
+        # Khởi động sau reboot
+        exit 0
+    elif [[ "${SYSTEMD_START_TRIGGERS:-}" == "auto" ]]; then
+        # Khởi động lại do lỗi (Restart=always)
+        exit 0
+    fi
+    # Nếu là start thủ công, $SYSTEMD_START_TRIGGERS sẽ là rỗng (vì không được systemd set)
 fi
+
 IP="$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || hostname -I | awk '{print $1}')"
 PROXY_LINE="${IP}:${PROXY_PORT}:${PROXY_USER}:${PROXY_PASS}"
-case "$action" in
-  start) prefix="NEW" ;;
-  stop)  prefix="STOPPED" ;;
-  *)     prefix="INFO" ;;
-esac
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-  -d chat_id="$USER_ID" \
-  --data-urlencode "text=[${prefix}] ${PROXY_LINE} ($(date +'%H:%M:%S %d-%m-%Y'))" >/dev/null || true
-EOS
-  chmod 0755 /usr/local/bin/proxy-notify.sh
 
-  install -d -m 0755 /etc/systemd/system/danted.service.d
-  cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
+case "$action" in
+  start) prefix="NEW" ;;
+  stop)  prefix="STOPPED" ;;
+  *)     prefix="INFO" ;;
+esac
+
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -d chat_id="$USER_ID" \
+  --data-urlencode "text=[${prefix}] ${PROXY_LINE} ($(date +'%H:%M:%S %d-%m-%Y'))" >/dev/null || true
+EOS
+  chmod 0755 /usr/local/bin/proxy-notify.sh
+
+  install -d -m 0755 /etc/systemd/system/danted.service.d
+  # Cập nhật notify.conf: systemd tự động set các biến này khi khởi động
+  cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
 [Service]
 EnvironmentFile=/etc/proxy_notify.env
-Environment=NOTIFY_MANUAL=0
-ExecStartPost=/usr/local/bin/proxy-notify.sh start
-ExecStopPost=/usr/local/bin/proxy-notify.sh stop
+# Thiết lập biến cho các trường hợp tự động/hệ thống khởi động
+# Các biến này CHỈ được set khi systemd tự động khởi động dịch vụ
+Environment=SYSTEMD_START_TRIGGERS=auto
+[Unit]
+# Thiết lập biến khi systemd khởi động sau reboot
+OnFailure=
+OnSuccess=
+OnRestart=
+# Các biến này chỉ áp dụng khi dịch vụ được gọi thủ công qua 'systemctl start/restart'
+# Khởi động sau reboot sẽ có cờ riêng (systemd-boot-notification)
 EOF
 
-  systemctl daemon-reload
-  systemctl restart danted
-  systemctl enable danted
+  systemctl daemon-reload
+  systemctl restart danted
+  systemctl enable danted
 
-  echo "[OK] Proxy SOCKS5 đã tạo: $PROXY_LINE"
-  echo "[INFO] IP forwarding và iptables đã được bật tự động."
+  echo "[OK] Proxy SOCKS5 đã tạo: $PROXY_LINE"
+  echo "[INFO] IP forwarding và iptables đã được bật tự động."
 }
 
 # =========================== END FILE =================================
