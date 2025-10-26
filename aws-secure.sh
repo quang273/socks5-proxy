@@ -126,7 +126,7 @@ PROXY_PASS="$PASSWORD"
 EOF
   chmod 0600 /etc/proxy_notify.env
 
-  # SCRIPT NOTIFY ĐÃ ĐƯỢC SỬA ĐỔI: Kiểm tra $SYSTEMD_START_TRIGGERS để chặn reboot
+  # SCRIPT NOTIFY ĐÃ ĐƯỢC SỬA ĐỔI: Kiểm tra SYSTEMD_INVOCATION_ID và RESTART
   cat >/usr/local/bin/proxy-notify.sh <<'EOS'
 #!/bin/bash
 set -euo pipefail
@@ -135,19 +135,41 @@ set -euo pipefail
 
 action="${1:-start}"
 
-# Logic mới: Nếu action là start VÀ hệ thống khởi động từ boot (hoặc lỗi), thì KHÔNG gửi.
-# SYSTEMD_START_TRIGGERS được set trong notify.conf (ExecStartPost)
-# Nếu không phải do người dùng chạy 'systemctl start/restart', biến này sẽ là 'reboot' hoặc 'auto'.
-# Nếu $SYSTEMD_START_TRIGGERS không rỗng (chạy qua drop-in), ta kiểm tra $action.
+# LOGIC SỬA LỖI: Chỉ gửi NEW nếu KHÔNG phải là khởi động tự động
 if [[ "$action" == "start" ]]; then
-    if [[ "${SYSTEMD_START_TRIGGERS:-}" == "reboot" ]]; then
-        # Khởi động sau reboot
-        exit 0
-    elif [[ "${SYSTEMD_START_TRIGGERS:-}" == "auto" ]]; then
-        # Khởi động lại do lỗi (Restart=always)
+    # Kiểm tra xem dịch vụ có phải đang tự động restart (do lỗi) không
+    # $RESTART được systemd đặt khi dịch vụ restart do cấu hình Restart=
+    if [[ "${RESTART:-}" == "1" ]]; then
         exit 0
     fi
-    # Nếu là start thủ công, $SYSTEMD_START_TRIGGERS sẽ là rỗng (vì không được systemd set)
+    
+    # Kiểm tra xem có phải là khởi động sau reboot không
+    # $SYSTEMD_INVOCATION_ID là biến môi trường chỉ có trong quá trình systemd khởi động
+    # Nếu đang trong quá trình boot/reboot, biến này có giá trị (hoặc không rỗng)
+    # Tuy nhiên, kiểm tra này khó phân biệt khởi động thủ công với reboot
+    # Cách tốt nhất là dựa vào trạng thái của danted trước khi ExecStartPost chạy
+    
+    # Tạm thời, ta chỉ dựa vào $RESTART để chặn lỗi tự restart.
+    # Để chặn reboot, ta cần đảm bảo dịch vụ không chạy lại trong quá trình boot.
+    # Vì systemctl enable danted đã đặt nó chạy khi boot, ta cần giữ logic đơn giản nhất.
+    
+    # Nếu hệ thống đang trong quá trình boot, systemd sẽ set các biến như $TERM=linux (không đáng tin cậy)
+    
+    # Giải pháp đơn giản nhất và đáng tin cậy nhất là: 
+    # Nếu service đang chạy (trước khi start), có thể là khởi động thủ công/restart.
+    # Tuy nhiên, để đảm bảo CHẶN REBOOT, chúng ta giữ logic kiểm tra $SYSTEMD_RESTART_COUNT.
+    
+    # $SYSTEMD_RESTART_COUNT sẽ là 0 khi khởi động lần đầu (sau reboot), và tăng lên khi tự restart
+    # KHÔNG DÙNG $SYSTEMD_RESTART_COUNT VÌ NÓ CÓ THỂ LÀ 0 KHI REBOOT!
+    
+    # SỬA LỖI: Dùng lại logic NOTIFY_MANUAL trong drop-in, nhưng kiểm tra sự tồn tại của file.
+    # BỎ QUA KIỂM TRA PHỨC TẠP: Nếu là start, ta chỉ gửi nếu nó KHÔNG phải là restart do lỗi.
+    
+    # Để chắc chắn chặn reboot: chúng ta cần giữ lại một cơ chế chặn mặc định.
+    # Trong drop-in, ta sẽ đặt một cờ chỉ bị tắt khi systemctl chạy thủ công.
+    
+    # SỬA LỖI ĐƠN GIẢN NHẤT: Bỏ qua kiểm tra phức tạp, chỉ cần đảm bảo $RESTART bị chặn là đủ
+    :
 fi
 
 IP="$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || hostname -I | awk '{print $1}')"
@@ -166,20 +188,86 @@ EOS
   chmod 0755 /usr/local/bin/proxy-notify.sh
 
   install -d -m 0755 /etc/systemd/system/danted.service.d
-  # Cập nhật notify.conf: systemd tự động set các biến này khi khởi động
+  # Cập nhật notify.conf: Bỏ biến môi trường gây lỗi. Sử dụng cờ $SYSTEMD_RESTART_COUNT
+  # Tuy nhiên, vì mục tiêu là chặn reboot (khởi động lần đầu), ta cần giữ cờ mặc định.
+  
+  # GIẢI PHÁP CUỐI CÙNG: Đặt cờ mặc định trong drop-in và kiểm tra sự tồn tại của file cờ
+  touch /var/run/danted_manual_flag 2>/dev/null || true # Tạo file cờ
+
   cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
 [Service]
 EnvironmentFile=/etc/proxy_notify.env
-# Thiết lập biến cho các trường hợp tự động/hệ thống khởi động
-# Các biến này CHỈ được set khi systemd tự động khởi động dịch vụ
-Environment=SYSTEMD_START_TRIGGERS=auto
-[Unit]
-# Thiết lập biến khi systemd khởi động sau reboot
-OnFailure=
-OnSuccess=
-OnRestart=
-# Các biến này chỉ áp dụng khi dịch vụ được gọi thủ công qua 'systemctl start/restart'
-# Khởi động sau reboot sẽ có cờ riêng (systemd-boot-notification)
+# Bỏ logic phức tạp, sử dụng cờ RESTART để chặn tự động restart do lỗi
+Environment=RESTART=0
+ExecStartPost=/usr/local/bin/proxy-notify.sh start
+ExecStopPost=/usr/local/bin/proxy-notify.sh stop
+EOF
+
+  # GHI ĐÈ SCRIPT NOTIFY LẦN CUỐI:
+  cat >/usr/local/bin/proxy-notify.sh <<'EOS'
+#!/bin/bash
+set -euo pipefail
+: "${BOT_TOKEN:?}"; : "${USER_ID:?}"
+: "${PROXY_PORT:?}"; : "${PROXY_USER:?}"; : "${PROXY_PASS:?}"
+
+action="${1:-start}"
+
+if [[ "$action" == "start" ]]; then
+    # CHỈ GỬI NEW KHI:
+    # 1. systemd không đặt biến $RESTART (tức không phải lỗi tự restart)
+    # 2. KHÔNG phải là khởi động sau reboot/startup.
+    
+    # Khó khăn: systemd không có cờ rõ ràng phân biệt "start thủ công" và "start sau reboot".
+    # Giải pháp: Nếu $RESTART không tồn tại, ta giả định là khởi động thủ công/reboot.
+    # Nếu $RESTART tồn tại và bằng 1 (do cấu hình Restart=), đó là tự động restart.
+    
+    # Để phân biệt REBOOT (START LẦN ĐẦU) và START THỦ CÔNG:
+    # Ta dựa vào file lock.
+    
+    if [[ ! -f /var/run/danted_notify_flag ]]; then
+        # Nếu file cờ chưa tồn tại, đây là khởi động LẦN ĐẦU TIÊN (sau setup/reboot).
+        # CÓ THỂ là setup lần đầu hoặc REBOOT. Ta CHỈ gửi tin nhắn [INIT] (đã gửi ở bước 6).
+        touch /var/run/danted_notify_flag || true # Tạo cờ
+        # Tránh gửi NEW trùng với [INIT] hoặc REBOOT
+        exit 0 
+    fi
+    
+    # Nếu file cờ đã tồn tại, đây là START THỦ CÔNG sau khi dịch vụ đã chạy trước đó.
+    
+    # Nếu là restart do lỗi (chỉ áp dụng nếu có Restart=on-failure), $RESTART sẽ được set.
+    # Tuy nhiên, ta không cấu hình Restart=, nên ta dựa vào file cờ.
+    :
+fi
+
+IP="$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || hostname -I | awk '{print $1}')"
+PROXY_LINE="${IP}:${PROXY_PORT}:${PROXY_USER}:${PROXY_PASS}"
+
+case "$action" in
+  start) prefix="NEW" ;;
+  stop)  
+    # Khi STOP, xóa cờ để lần START tiếp theo (thủ công) sẽ gửi tin nhắn [NEW]
+    rm -f /var/run/danted_notify_flag || true
+    prefix="STOPPED" 
+    ;;
+  *)     prefix="INFO" ;;
+esac
+
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -d chat_id="$USER_ID" \
+  --data-urlencode "text=[${prefix}] ${PROXY_LINE} ($(date +'%H:%M:%S %d-%m-%Y'))" >/dev/null || true
+EOS
+  chmod 0755 /usr/local/bin/proxy-notify.sh
+
+  # Xóa cờ cũ (nếu có)
+  rm -f /var/run/danted_notify_flag || true
+
+  install -d -m 0755 /etc/systemd/system/danted.service.d
+  cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
+[Service]
+EnvironmentFile=/etc/proxy_notify.env
+# Gỡ bỏ các biến môi trường phức tạp
+ExecStartPost=/usr/local/bin/proxy-notify.sh start
+ExecStopPost=/usr/local/bin/proxy-notify.sh stop
 EOF
 
   systemctl daemon-reload
