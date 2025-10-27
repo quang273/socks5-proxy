@@ -1,289 +1,118 @@
 #!/bin/bash
-
-# ======================== SOCKS5 PROXY CREATOR =========================
-
-# Author : quang273 – 2025-06-26
-
-# Usage  : setup_proxy_single_port PORT PASSWORD ALLOW_IP \
-
-#                                ENABLE_TELEGRAM BOT_TOKEN USER_ID
-
-# ======================================================================
-
-
-
-install_dependencies() {
-
-  command -v danted &>/dev/null && return
-
-  export DEBIAN_FRONTEND=noninteractive
-
-  apt-get update -y
-
-  apt-get install -y dante-server curl iptables
-
-}
-
-
-
-# ---------- TELEGRAM ALLOWLIST (ONLY THESE PAIRS CAN RUN) -------------
-
-# Mỗi dòng: TOKEN|USER_ID (khớp tuyệt đối). Thêm/bớt tại đây nếu cần.
-
-# Quan trọng: thêm "|| true" để không làm fail khi user-data dùng set -e.
-
-read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
-
-8337521994:AAGC6jOTVGGzKksT3scDxhPjPv24uuNaPy0|1399941464
-7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDtKKM|1053423800
-8333633082:AAHd0udd0eJbLt_iKXRaaYYWznPjx7QEB-8|8246321275
-8335425461:AAF0umwP0lcGclhOK3ZDMAtj489-V7ffdaw|8001423953
-8044621096:AAG24BkC1EquTQWRzU0yITE5vyfpL65k3N4|6483851447
-8457121857:AAGlY7uy4oGBn-I_3-mlrUZLy17OSF9rUU0|8111988352
-7944651217:AAH-7bpIS-X7w2prt1iN3mPeh88m4favJKI|7490814886
-7959947367:AAGz46hZFXQ_n4puvHiOcL2mVVb6mFfmzGM|891365260
-8271298044:AAFnMCgN0B7bfN_mRKwqcwAIeAMsvbcnbWo|6498331185
-8465172888:AAHTnp02BBi0UI30nGfeYiNsozeb06o-nEk|6666449775
-WL
-
-
-
-__mask_token() {
-
-  local t="${1:-}"
-
-  [[ -z "$t" ]] && { echo "<empty>"; return; }
-
-  echo "${t:0:8}********"
-
-}
-
-
-
-__is_allowed_pair() {
-
-  local token="${1:-}" uid="${2:-}"
-
-  [[ -z "$token" || -z "$uid" ]] && return 1
-
-  local pair="$token|$uid"
-
-  grep -qxF -- "$pair" <<<"$__TELEGRAM_ALLOWLIST"
-
-}
-
-
-
-setup_proxy_single_port() {
-
-  local PORT="$1" PASSWORD="$2" ALLOW_IP="$3"
-
-  local ENABLE_TELEGRAM="$4" BOT_TOKEN="$5" USER_ID="$6"
-
-  local USERNAME="mr.quang"
-
-
-
-  # ---- GATE: chỉ cho phép BOT_TOKEN/USER_ID trong whitelist; bắt buộc ENABLE_TELEGRAM=1 ----
-
-  if [[ "$ENABLE_TELEGRAM" != "1" ]]; then
-
-    echo "[BLOCK] ENABLE_TELEGRAM != 1 → từ chối chạy." >&2
-
-    return 1
-
-  fi
-
-  if ! __is_allowed_pair "$BOT_TOKEN" "$USER_ID"; then
-
-    echo "[BLOCK] BOT_TOKEN/USER_ID không nằm trong whitelist → từ chối chạy." >&2
-
-    echo "        token=$(__mask_token "$BOT_TOKEN"), user_id=${USER_ID:-<empty>}" >&2
-
-    return 1
-
-  fi
-
-
-
-  # 1) Validate PORT
-
-  [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT>1023 && PORT<65536)) || {
-
-    echo "[ERR] Port $PORT không hợp lệ!" >&2; return 1; }
-
-
-
-  # 2) Cài gói & user
-
-  install_dependencies
-
-  userdel -r "$USERNAME" 2>/dev/null || true
-
-  useradd -M -s /usr/sbin/nologin "$USERNAME"
-
-  echo "$USERNAME:$PASSWORD" | chpasswd
-
-
-
-  # 3) Interface mặc định
-
-  local IFACE
-
-  IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
-
-
-
-  # 4) File cấu hình Dante
-
-  cat >/etc/danted.conf <<EOF
-
-logoutput: /var/log/danted.log
-
-internal: $IFACE port = $PORT
-
-external: $IFACE
-
-method: username
-
-user.notprivileged: nobody
-
-client pass { from: $ALLOW_IP to: 0.0.0.0/0 }
-
-pass {
-
-  from: $ALLOW_IP to: 0.0.0.0/0
-
-  protocol: tcp udp
-
-  method: username
-
-}
-
-EOF
-
-
-
-  # 5) Mở cổng & khởi động
-
-  iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null \
-
-    || iptables -A INPUT -p tcp --dport "$PORT" -j ACCEPT
-
-  systemctl restart danted
-
-  systemctl enable danted
-
-
-
-  # 6) Thông tin proxy
-
-  local IP
-
-  IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
-
-  local PROXY_LINE="$IP:$PORT:$USERNAME:$PASSWORD"
-
-
-
-  # 7) Gửi Telegram (đến đây chắc chắn là allowlisted)
-
-  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-
-    -d chat_id="$USER_ID" \
-
-    -d text="$PROXY_LINE" >/dev/null
-
-
-
-  # -------------------- [BỔ SUNG] Notify STOP/START (IP runtime) --------------------
-
-  # Lưu env (không lưu IP để mỗi lần START sẽ tự lấy IP mới)
-
-  cat >/etc/proxy_notify.env <<EOF
-
-BOT_TOKEN="$BOT_TOKEN"
-
-USER_ID="$USER_ID"
-
-PROXY_PORT="$PORT"
-
-PROXY_USER="$USERNAME"
-
-PROXY_PASS="$PASSWORD"
-
-EOF
-
-  chmod 0600 /etc/proxy_notify.env
-
-
-
-  # Script notify: tự tính IP tại thời điểm chạy (đảm bảo IP mới sau khi VPS đổi IP)
-
-  cat >/usr/local/bin/proxy-notify.sh <<'EOS'
-
-#!/bin/bash
-
 set -euo pipefail
 
-: "${BOT_TOKEN:?}"; : "${USER_ID:?}"
+# ======== HÀM HỖ TRỢ ========
 
-: "${PROXY_PORT:?}"; : "${PROXY_USER:?}"; : "${PROXY_PASS:?}"
-
-IP="$(curl -s ifconfig.me || hostname -I | awk '{print $1}')"
-
-PROXY_LINE="${IP}:${PROXY_PORT}:${PROXY_USER}:${PROXY_PASS}"
-
-action="${1:-start}"
-
-case "$action" in
-
-  start)  prefix="NEW" ;;
-
-  stop)   prefix="STOPPED" ;;
-
-  *)      prefix="INFO" ;;
-
-esac
-
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-
-  -d chat_id="$USER_ID" \
-
-  --data-urlencode "text=${prefix} ${PROXY_LINE}" >/dev/null || true
-
-EOS
-
-  chmod 0755 /usr/local/bin/proxy-notify.sh
-
-
-
-  # Drop-in cho danted.service để gửi khi START/STOP
-
-  install -d -m 0755 /etc/systemd/system/danted.service.d
-
-  cat >/etc/systemd/system/danted.service.d/notify.conf <<'EOF'
-
-[Service]
-
-EnvironmentFile=/etc/proxy_notify.env
-
-ExecStartPost=/usr/local/bin/proxy-notify.sh start
-
-ExecStopPost=/usr/local/bin/proxy-notify.sh stop
-
-EOF
-
-  systemctl daemon-reload
-
-  # ---------------------------------------------------------------------
-
-
-
-  echo "[OK] Proxy SOCKS5 đã tạo: $PROXY_LINE"
-
+# Gửi thông báo về Telegram
+notify_telegram() {
+    local message="$1"
+    local bot_token="$2"
+    local user_id="$3"
+    curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        -d "chat_id=${user_id}" \
+        -d "text=${message}" >/dev/null 2>&1 || true
 }
 
+# Tự động mở port trong Security Group (nếu có quyền AWS CLI)
+open_security_group_port() {
+    local port="$1"
+    if command -v aws >/dev/null 2>&1; then
+        local instance_id
+        instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+        local region
+        region=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | awk -F\" '{print $4}')
+        local sg_id
+        sg_id=$(aws ec2 describe-instances --instance-id "$instance_id" --region "$region" \
+            --query "Reservations[0].Instances[0].SecurityGroups[0].GroupId" --output text)
 
+        if [[ -n "$sg_id" ]]; then
+            echo "[INFO] Mở port ${port}/tcp trong Security Group: ${sg_id}"
+            aws ec2 authorize-security-group-ingress \
+                --group-id "$sg_id" \
+                --protocol tcp \
+                --port "$port" \
+                --cidr 0.0.0.0/0 \
+                --region "$region" 2>/dev/null || true
+        fi
+    fi
+}
 
-# =========================== END FILE =================================
+# ======== HÀM CHÍNH ========
+
+setup_proxy_single_port() {
+    local port="$1"
+    local password="$2"
+    local allow_ip="$3"
+    local attempt="$4"
+    local bot_token="$5"
+    local user_id="$6"
+    local username="$7"
+
+    echo "[INIT] Cài đặt proxy SOCKS5 cho user: $username (port: $port)"
+
+    # Cài đặt dante-server (SOCKS5)
+    apt-get update -y && apt-get install -y dante-server net-tools >/dev/null
+
+    # Cấu hình Dante
+    cat > /etc/danted.conf <<EOF
+logoutput: syslog
+internal: eth0 port = $port
+external: eth0
+
+method: username
+user.notprivileged: nobody
+
+client pass {
+    from: $allow_ip to: 0.0.0.0/0
+    log: connect disconnect error
+}
+
+pass {
+    from: $allow_ip to: 0.0.0.0/0
+    protocol: tcp udp
+    method: username
+    log: connect disconnect error
+}
+EOF
+
+    # Tạo user SOCKS5
+    if ! id "$username" &>/dev/null; then
+        useradd -M -s /usr/sbin/nologin "$username"
+    fi
+    echo "${username}:${password}" | chpasswd
+
+    # Tự động bật port trong Security Group
+    open_security_group_port "$port"
+
+    # Khởi động Dante và bật khởi động cùng hệ thống
+    systemctl enable danted
+    systemctl restart danted
+
+    # Lấy IP public
+    local ip
+    ip=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "UNKNOWN")
+
+    # Gửi thông báo về Telegram với retry 3 lần
+    local msg="✅ SOCKS5 READY\nHost: ${ip}\nPort: ${port}\nUser: ${username}\nPass: ${password}"
+    local retries=0
+    local success=false
+
+    while [[ $retries -lt 3 ]]; do
+        if notify_telegram "$msg" "$bot_token" "$user_id"; then
+            echo "[INFO] Gửi thông báo Telegram thành công."
+            success=true
+            break
+        else
+            echo "[WARN] Gửi thông báo thất bại. Thử lại sau 10 giây..."
+            retries=$((retries + 1))
+            sleep 10
+        fi
+    done
+
+    if [[ "$success" == false ]]; then
+        echo "[ERROR] Không thể gửi thông báo sau 3 lần thử."
+    fi
+
+    echo "[DONE] Proxy SOCKS5 đã được cấu hình hoàn tất!"
+}
+
