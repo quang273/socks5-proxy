@@ -28,6 +28,7 @@ read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
 7959947367:AAGz46hZFXQ_n4puvHiOcL2mVVb6mFfmzGM|891365260
 8271298044:AAFnMCgN0B7bfN_mRKwqcwAIeAMsvbcnbWo|6498331185
 8465172888:AAHTnp02BBi0UI30nGfeYiNsozeb06o-nEk|6666449775
+8488804766:AAEMfAPeWStdblou4SBm16gVd2wlhpHIf-M|1100742024
 WL
 
 __mask_token(){ local t="${1:-}"; [[ -z "$t" ]] && { echo "<empty>"; return; }; echo "${t:0:8}********"; }
