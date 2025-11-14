@@ -1,106 +1,119 @@
 #!/bin/bash
 set -euo pipefail
 
-FLAG_FILE_TS="/var/run/proxy_last_notify_ts"
+# ======================== CHECK BOT/ID INPUT =========================
+if [ $# -lt 7 ]; then
+    echo "Usage: $0 PORT PASSWORD ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID PROXY_USERNAME"
+    exit 1
+fi
 
-# =============================
-# TELEGRAM WHITELIST
-# =============================
-read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
-8337521994:AAGC6jOTVGGzKksT3scDxhPjPv24uuNaPy0|1399941464
-7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDtKKM|1053423800
-8333633082:AAHd0udd0eJbLt_iKXRaaYYWznPjx7QEB-8|8246321275
-8335425461:AAF0umwP0lcGclhOK3ZDMAtj489-V7ffdaw|8001423953
-8044621096:AAG24BkC1EquTQWRzU0yITE5vyfpL65k3N4|6483851447
-8457121857:AAGlY7uy4oGBn-I_3-mlrUZLy17OSF9rUU0|8111988352
-7944651217:AAH-7bpIS-X7w2prt1iN3mPeh88m4favJKI|7490814886
-7959947367:AAGz46hZFXQ_n4puvHiOcL2mVVb6mFfmzGM|891365260
-8271298044:AAFnMCgN0B7bfN_mRKwqcwAIeAMsvbcnbWo|6498331185
-8465172888:AAHTnp02BBi0UI30nGfeYiNsozeb06o-nEk|6666449775
-8488804766:AAEMfAPeWStdblou4SBm16gVd2wlhpHIf-M|1100742024
-8580156538:AAGzbkEgLNiKxAPzdOmxt5Z588g7swDmHkw|8082884663
-8378104026:AAH7RmmhVSwK5_PnrTtctDNK-mEA5y3VsGk|1131451764
-8482254041:AAF7CkR4JIJ-0EKzejLrCOHgJaDU9KDIb0M|5933616829
-8347637166:AAGCUlTJOroCZQA4lLIPnjzxH026DuX_cdg|1854091009
-WL
+PORT="$1"
+PASSWORD="$2"
+ALLOW_IP="$3"
+ENABLE_TELEGRAM="$4"
+BOT_TOKEN="$5"
+USER_ID="$6"
+PROXY_USERNAME="$7"
 
-# =============================
-# HÀM HỖ TRỢ TELEGRAM
-# =============================
-__is_allowed_pair() {
-    local token="$1" user="$2"
-    grep -q "^${token}|${user}$" <<< "$__TELEGRAM_ALLOWLIST"
-}
-
-__mask_token() {
-    local t="$1"
-    echo "${t:0:6}****${t: -4}"
-}
-
-__telegram_send_retry() {
-    local token="$1" chat="$2" msg="$3"
-    local url="https://api.telegram.org/bot${token}/sendMessage"
-
-    for i in 1 2 3; do
-        if curl -s -m 5 -X POST "$url" -d chat_id="$chat" -d text="$msg" >/dev/null; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
-
-# =============================
-# CÀI ĐẶT DANTE & USER PROXY
-# =============================
-install_dependencies() {
-    command -v danted &>/dev/null && return
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y >/dev/null
-    apt-get install -y dante-server curl iptables >/dev/null 2>&1 || \
-    apt-get install -y danted curl iptables >/dev/null 2>&1 || true
-}
-
-setup_proxy_single_port() {
-    local PORT="$1" PASSWORD="$2" ALLOW_IP="$3" ENABLE_TELEGRAM="$4" BOT_TOKEN="$5" USER_ID="$6" USERNAME="$7"
-
-    if [[ "$ENABLE_TELEGRAM" != "1" ]]; then
-        echo "[BLOCK] ENABLE_TELEGRAM != 1 → từ chối chạy." >&2
-        return 1
+sendTG() {
+    if [ "$ENABLE_TELEGRAM" -eq 1 ]; then
+        curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+        -d chat_id="${USER_ID}" \
+        -d text="${1}" >/dev/null
     fi
-    if ! __is_allowed_pair "$BOT_TOKEN" "$USER_ID"; then
-        echo "[BLOCK] BOT_TOKEN/USER_ID không nằm trong whitelist → từ chối chạy." >&2
-        echo "token=$(__mask_token "$BOT_TOKEN"), user_id=${USER_ID:-<empty>}" >&2
-        return 1
-    fi
+}
 
-    install_dependencies
+# ======================== AZURE CONFIG ===============================
+RESOURCE_GROUP="proxy-japan"
+LOCATION="japaneast"
+VM_SIZE="Standard_B1s"
+IMAGE="Ubuntu2404"
+ADMIN_USER="azureuser"
+VM_COUNT=6
+RESULT_FILE="/tmp/proxy_result_${RANDOM}.txt"
+rm -f "$RESULT_FILE"
 
-    if ! id "$USERNAME" &>/dev/null; then
-        useradd -m -s /usr/sbin/nologin "$USERNAME"
-        echo "$USERNAME:$PASSWORD" | chpasswd
-    fi
+# ======================== CREATE RESOURCE GROUP ======================
+az group show --name "$RESOURCE_GROUP" >/dev/null 2>&1 || {
+    sendTG "⚙️ Creating Resource Group $RESOURCE_GROUP at $LOCATION..."
+    az group create --name "$RESOURCE_GROUP" --location "$LOCATION" >/dev/null
+}
 
-    cat >/etc/danted.conf <<EOF
-logoutput: stderr
+# ======================== CREATE NSG ================================
+NSG_NAME="proxy-nsg"
+az network nsg show --resource-group "$RESOURCE_GROUP" --name "$NSG_NAME" >/dev/null 2>&1 || {
+    sendTG "🔒 Creating NSG rule for proxy port $PORT..."
+    az network nsg create --resource-group "$RESOURCE_GROUP" --name "$NSG_NAME" >/dev/null
+    az network nsg rule create \
+        --resource-group "$RESOURCE_GROUP" \
+        --nsg-name "$NSG_NAME" \
+        --name AllowProxyPort \
+        --protocol Tcp \
+        --priority 1001 \
+        --destination-port-ranges "$PORT" \
+        --access Allow \
+        --source-address-prefixes "$ALLOW_IP" >/dev/null
+}
+
+# ======================== DEPLOY 6 VMs ===============================
+for i in $(seq 1 $VM_COUNT); do
+    VM_NAME="proxy-jp-$i"
+    IP_NAME="proxy-ip-$i"
+
+    sendTG "🚀 Deploying VM $VM_NAME..."
+
+    az network public-ip create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$IP_NAME" \
+        --sku Standard --allocation-method static >/dev/null
+
+    az vm create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$VM_NAME" \
+        --image "$IMAGE" \
+        --size "$VM_SIZE" \
+        --admin-username "$ADMIN_USER" \
+        --generate-ssh-keys \
+        --public-ip-address "$IP_NAME" \
+        --nsg "$NSG_NAME" >/dev/null
+
+    PUBLIC_IP=$(az network public-ip show --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" --query "ipAddress" -o tsv)
+
+    # ================== INSTALL DANTE + SETUP PROXY ==================
+    sendTG "⚙️ Installing proxy on $PUBLIC_IP..."
+
+    az vm run-command invoke \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$VM_NAME" \
+        --command-id RunShellScript \
+        --scripts "sudo apt update && sudo apt install -y dante-server && sudo bash -c 'cat >/etc/danted.conf <<EOF
+logoutput: /var/log/danted.log
+internal: ens33 port = $PORT
+external: ens33
+method: username
 user.notprivileged: nobody
-internal: 0.0.0.0 port = $PORT
-external: $(hostname -I | awk '{print $1}')
-socksmethod: username
-clientmethod: none
-client pass { from: $ALLOW_IP to: 0.0.0.0/0 }
-sockspass { from: $ALLOW_IP to: 0.0.0.0/0 log: connect disconnect error }
-EOF
-
-    iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT
-    systemctl stop danted 2>/dev/null || true
-    systemctl enable danted >/dev/null 2>&1
-    systemctl restart danted >/dev/null 2>&1
-
-    PROXY_LINE="$(curl -s ipv4.icanhazip.com):$PORT:$USERNAME:$PASSWORD"
-    echo "[OK] SOCKS5 Proxy đã khởi tạo: $PROXY_LINE"
-
-    if __telegram_send_retry "$BOT_TOKEN" "$USER_ID" "[INIT] $PROXY_LINE"; then
-        date +%s > "$FLAG_FILE_TS" 2>/dev/null || true
-    fi
+client pass {
+        from: $ALLOW_IP
+        to: 0.0.0.0/0
+        log: connect disconnect
 }
+socks pass {
+        from: $ALLOW_IP
+        to: 0.0.0.0/0
+        log: connect disconnect
+}
+EOF'
+useradd -m $PROXY_USERNAME || true
+echo "$PROXY_USERNAME:$PASSWORD" | chpasswd
+systemctl restart danted" >/dev/null
+
+    echo "$PUBLIC_IP:$PORT:$PROXY_USERNAME:$PASSWORD" >> "$RESULT_FILE"
+done
+
+# ======================== SEND RESULT ===============================
+if [ -f "$RESULT_FILE" ]; then
+    PROXY_LIST=$(cat "$RESULT_FILE")
+    sendTG "🎉 *Tạo 6 proxy Nhật Bản thành công!*
+
+\`\n$PROXY_LIST\n\`"
+fi
