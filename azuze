@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===============================================================
-#      AZURE 6 VM PROXY DEPLOYER – DANTE + TELEGRAM NOTIFY
+# AZURE 6 VM PROXY DEPLOYER – DANTE + TELEGRAM NOTIFY (OPTIMIZED)
 # ===============================================================
 
 set -euo pipefail
@@ -62,8 +62,9 @@ fi
 sendTG() {
     if [ "$ENABLE_TELEGRAM" -eq 1 ]; then
         curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-        -d chat_id="${USER_ID}" \
-        -d text="$1" >/dev/null
+            -d chat_id="${USER_ID}" \
+            -d text="$1" \
+            -d parse_mode=Markdown >/dev/null
     fi
 }
 
@@ -114,13 +115,12 @@ for i in $(seq 1 $VM_COUNT); do
     VM_NAME="proxy-jp-$i"
     IP_NAME="proxy-ip-$i"
 
-    # Xóa VM cũ nếu tồn tại
-    az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" >/dev/null 2>&1 && {
+    # Xóa VM cũ nếu tồn tại và chờ hoàn tất
+    if az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" >/dev/null 2>&1; then
         sendTG "🗑️ Deleting old VM $VM_NAME..."
-        az vm delete --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --yes --no-wait
+        az vm delete --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --yes
         az network public-ip delete --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" >/dev/null 2>&1 || true
-        sleep 15
-    }
+    fi
 
     sendTG "🚀 Deploying VM $VM_NAME..."
 
@@ -138,6 +138,7 @@ for i in $(seq 1 $VM_COUNT); do
         --public-ip-address "$IP_NAME" \
         --nsg "$NSG_NAME" >/dev/null
 
+    # Lấy IP mới
     PUBLIC_IP=$(az network public-ip show --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" --query "ipAddress" -o tsv)
 
     # Cài Dante + Proxy
@@ -149,8 +150,8 @@ for i in $(seq 1 $VM_COUNT); do
         --scripts "sudo apt update -y && sudo apt install -y dante-server &&
 sudo bash -c 'cat >/etc/danted.conf <<EOF
 logoutput: /var/log/danted.log
-internal: ens33 port = $PORT
-external: ens33
+internal: 0.0.0.0 port = $PORT
+external: $(hostname -I | awk "{print \$1}")
 method: username
 user.notprivileged: nobody
 client pass {
@@ -166,12 +167,17 @@ useradd -m $PROXY_USERNAME || true
 echo \"$PROXY_USERNAME:$PASSWORD\" | chpasswd
 systemctl restart danted'" >/dev/null
 
-    echo "$PUBLIC_IP:$PORT:$PROXY_USERNAME:$PASSWORD" >> "$RESULT_FILE"
+    # Lưu proxy vào file tạm an toàn
+    {
+        flock 200
+        echo "$PUBLIC_IP:$PORT:$PROXY_USERNAME:$PASSWORD" >> "$RESULT_FILE"
+    } 200>/tmp/proxy_result_lock
+
 ) &
     PIDS+=($!)
 done
 
-# Chờ tất cả VM hoàn thành
+# Chờ tất cả VM hoàn tất
 for pid in "${PIDS[@]}"; do wait $pid; done
 
 # -----------------------------
@@ -180,6 +186,7 @@ for pid in "${PIDS[@]}"; do wait $pid; done
 if [ -f "$RESULT_FILE" ]; then
     PROXY_LIST=$(cat "$RESULT_FILE")
     sendTG "🎉 *6 Proxy Nhật Bản đã tạo thành công!*\n\`\n$PROXY_LIST\n\`"
+    rm -f "$RESULT_FILE"
 fi
 
 echo "✅ Hoàn tất tạo 6 proxy."
