@@ -1,45 +1,95 @@
 #!/bin/bash
+# ===============================================================
+#      AZURE 6 VM PROXY DEPLOYER – DANTE + TELEGRAM NOTIFY
+# ===============================================================
+
 set -euo pipefail
 
-# ======================== CHECK BOT/ID INPUT =========================
+# -----------------------------
+# TELEGRAM WHITELIST
+# -----------------------------
+read -r -d '' __TELEGRAM_ALLOWLIST <<"WL" || true
+8337521994:AAGC6jOTVGGzKksT3scDxhPjPv24uuNaPy0|1399941464
+7938057750:AAG8LSryy716gmDaoP36IjpdCXtycHDtKKM|1053423800
+8333633082:AAHd0udd0eJbLt_iKXRaaYYWznPjx7QEB-8|8246321275
+8335425461:AAF0umwP0lcGclhOK3ZDMAtj489-V7ffdaw|8001423953
+8044621096:AAG24BkC1EquTQWRzU0yITE5vyfpL65k3N4|6483851447
+8457121857:AAGlY7uy4oGBn-I_3-mlrUZLy17OSF9rUU0|8111988352
+7944651217:AAH-7bpIS-X7w2prt1iN3mPeh88m4favJKI|7490814886
+7959947367:AAGz46hZFXQ_n4puvHiOcL2mVVb6mFfmzGM|891365260
+8271298044:AAFnMCgN0B7bfN_mRKwqcwAIeAMsvbcnbWo|6498331185
+8465172888:AAHTnp02BBi0UI30nGfeYiNsozeb06o-nEk|6666449775
+8488804766:AAEMfAPeWStdblou4SBm16gVd2wlhpHIf-M|1100742024
+8580156538:AAGzbkEgLNiKxAPzdOmxt5Z588g7swDmHkw|8082884663
+8378104026:AAH7RmmhVSwK5_PnrTtctDNK-mEA5y3VsGk|1131451764
+8482254041:AAF7CkR4JIJ-0EKzejLrCOHgJaDU9KDIb0M|5933616829
+8347637166:AAGCUlTJOroCZQA4lLIPnjzxH026DuX_cdg|1854091009
+WL
+
+declare -A TG_MAP
+while IFS='|' read -r BOT USERID; do
+    [[ -z "$BOT" ]] && continue
+    TG_MAP["$BOT"]="$USERID"
+done <<< "$__TELEGRAM_ALLOWLIST"
+
+# -----------------------------
+# PARSE INPUT
+# -----------------------------
 if [ $# -lt 7 ]; then
-    echo "Usage: $0 PORT PASSWORD ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID PROXY_USERNAME"
+    echo "Usage: $0 PORT ALLOW_IP ENABLE_TELEGRAM BOT_TOKEN USER_ID PROXY_USERNAME PASSWORD"
     exit 1
 fi
 
 PORT="$1"
-PASSWORD="$2"
-ALLOW_IP="$3"
-ENABLE_TELEGRAM="$4"
-BOT_TOKEN="$5"
-USER_ID="$6"
-PROXY_USERNAME="$7"
+ALLOW_IP="$2"
+ENABLE_TELEGRAM="$3"
+BOT_TOKEN="$4"
+USER_ID="$5"
+PROXY_USERNAME="$6"
+PASSWORD="$7"
 
+# -----------------------------
+# CHECK BOT|USERID
+# -----------------------------
+if [[ ! "${TG_MAP[$BOT_TOKEN]+_}" ]] || [[ "${TG_MAP[$BOT_TOKEN]}" != "$USER_ID" ]]; then
+    echo "❌ BOT_TOKEN | USER_ID không hợp lệ. Script dừng."
+    exit 1
+fi
+
+# -----------------------------
+# SEND TELEGRAM
+# -----------------------------
 sendTG() {
     if [ "$ENABLE_TELEGRAM" -eq 1 ]; then
         curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         -d chat_id="${USER_ID}" \
-        -d text="${1}" >/dev/null
+        -d text="$1" >/dev/null
     fi
 }
 
-# ======================== AZURE CONFIG ===============================
+# -----------------------------
+# AZURE CONFIG
+# -----------------------------
 RESOURCE_GROUP="proxy-japan"
 LOCATION="japaneast"
 VM_SIZE="Standard_B1s"
-IMAGE="Ubuntu2404"
+IMAGE="Ubuntu2204"
 ADMIN_USER="azureuser"
 VM_COUNT=6
 RESULT_FILE="/tmp/proxy_result_${RANDOM}.txt"
 rm -f "$RESULT_FILE"
 
-# ======================== CREATE RESOURCE GROUP ======================
+# -----------------------------
+# CREATE RESOURCE GROUP
+# -----------------------------
 az group show --name "$RESOURCE_GROUP" >/dev/null 2>&1 || {
-    sendTG "⚙️ Creating Resource Group $RESOURCE_GROUP at $LOCATION..."
+    sendTG "⚙️ Creating Resource Group $RESOURCE_GROUP..."
     az group create --name "$RESOURCE_GROUP" --location "$LOCATION" >/dev/null
 }
 
-# ======================== CREATE NSG ================================
+# -----------------------------
+# CREATE NSG
+# -----------------------------
 NSG_NAME="proxy-nsg"
 az network nsg show --resource-group "$RESOURCE_GROUP" --name "$NSG_NAME" >/dev/null 2>&1 || {
     sendTG "🔒 Creating NSG rule for proxy port $PORT..."
@@ -55,18 +105,29 @@ az network nsg show --resource-group "$RESOURCE_GROUP" --name "$NSG_NAME" >/dev/
         --source-address-prefixes "$ALLOW_IP" >/dev/null
 }
 
-# ======================== DEPLOY 6 VMs ===============================
+# -----------------------------
+# DEPLOY 6 VM + PROXY SONG SONG
+# -----------------------------
+declare -a PIDS
 for i in $(seq 1 $VM_COUNT); do
+(
     VM_NAME="proxy-jp-$i"
     IP_NAME="proxy-ip-$i"
 
+    # Xóa VM cũ nếu tồn tại
+    az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" >/dev/null 2>&1 && {
+        sendTG "🗑️ Deleting old VM $VM_NAME..."
+        az vm delete --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --yes --no-wait
+        az network public-ip delete --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" >/dev/null 2>&1 || true
+        sleep 15
+    }
+
     sendTG "🚀 Deploying VM $VM_NAME..."
 
-    az network public-ip create \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$IP_NAME" \
-        --sku Standard --allocation-method static >/dev/null
+    # Tạo Public IP
+    az network public-ip create --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" --sku Standard --allocation-method static >/dev/null
 
+    # Tạo VM
     az vm create \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VM_NAME" \
@@ -79,41 +140,46 @@ for i in $(seq 1 $VM_COUNT); do
 
     PUBLIC_IP=$(az network public-ip show --resource-group "$RESOURCE_GROUP" --name "$IP_NAME" --query "ipAddress" -o tsv)
 
-    # ================== INSTALL DANTE + SETUP PROXY ==================
+    # Cài Dante + Proxy
     sendTG "⚙️ Installing proxy on $PUBLIC_IP..."
-
     az vm run-command invoke \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VM_NAME" \
         --command-id RunShellScript \
-        --scripts "sudo apt update && sudo apt install -y dante-server && sudo bash -c 'cat >/etc/danted.conf <<EOF
+        --scripts "sudo apt update -y && sudo apt install -y dante-server &&
+sudo bash -c 'cat >/etc/danted.conf <<EOF
 logoutput: /var/log/danted.log
 internal: ens33 port = $PORT
 external: ens33
 method: username
 user.notprivileged: nobody
 client pass {
-        from: $ALLOW_IP
-        to: 0.0.0.0/0
-        log: connect disconnect
+    from: $ALLOW_IP to: 0.0.0.0/0
+    log: connect disconnect
 }
 socks pass {
-        from: $ALLOW_IP
-        to: 0.0.0.0/0
-        log: connect disconnect
+    from: $ALLOW_IP to: 0.0.0.0/0
+    log: connect disconnect
 }
-EOF'
+EOF
 useradd -m $PROXY_USERNAME || true
-echo "$PROXY_USERNAME:$PASSWORD" | chpasswd
-systemctl restart danted" >/dev/null
+echo \"$PROXY_USERNAME:$PASSWORD\" | chpasswd
+systemctl restart danted'" >/dev/null
 
     echo "$PUBLIC_IP:$PORT:$PROXY_USERNAME:$PASSWORD" >> "$RESULT_FILE"
+) &
+    PIDS+=($!)
 done
 
-# ======================== SEND RESULT ===============================
+# Chờ tất cả VM hoàn thành
+for pid in "${PIDS[@]}"; do wait $pid; done
+
+# -----------------------------
+# SEND RESULT
+# -----------------------------
 if [ -f "$RESULT_FILE" ]; then
     PROXY_LIST=$(cat "$RESULT_FILE")
-    sendTG "🎉 *Tạo 6 proxy Nhật Bản thành công!*
-
-\`\n$PROXY_LIST\n\`"
+    sendTG "🎉 *6 Proxy Nhật Bản đã tạo thành công!*\n\`\n$PROXY_LIST\n\`"
 fi
+
+echo "✅ Hoàn tất tạo 6 proxy."
